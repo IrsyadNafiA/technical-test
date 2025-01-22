@@ -4,22 +4,23 @@ import '@mantine/core/styles.css';
 
 import { useEffect, useMemo, useState } from 'react';
 import { MantineReactTable, MRT_ColumnDef } from 'mantine-react-table';
-import * as yup from 'yup';
 import {
   Button,
   Flex,
   Group,
   Loader,
   Modal,
+  Select,
   Text,
   Textarea,
   TextInput,
   Title,
 } from '@mantine/core';
-import { useForm } from '@mantine/form';
+import { useForm, yupResolver } from '@mantine/form';
 import { useCounter, useDisclosure } from '@mantine/hooks';
 import { useUserStore } from '@/store/userStore';
 import axiosInstance from '@/utils/axiosInstance';
+import { addMaterialSchema, approvalMaterialSchema } from '@/utils/validation/materialSchema';
 
 // Types
 interface MaterialRequest {
@@ -35,25 +36,6 @@ interface Item {
   quantity: number;
   description: string;
 }
-
-// Yup Schema
-const addMaterialSchema = yup.object().shape({
-  requestedBy: yup.string().required('Requested By is required'),
-  status: yup.string().required('Status is required'),
-  items: yup
-    .array()
-    .of(
-      yup.object().shape({
-        name: yup.string().required('Item name is required'),
-        quantity: yup
-          .number()
-          .min(1, 'Quantity must be at least 1')
-          .required('Quantity is required'),
-        description: yup.string().required('Description is required'),
-      })
-    )
-    .min(1, 'At least one item is required'),
-});
 
 const MaterialRequests = () => {
   const [materialData, setMaterialData] = useState<MaterialRequest[]>([]);
@@ -87,14 +69,11 @@ const MaterialRequests = () => {
     fetchData();
   }, []);
 
+  // FORM
   const addMaterialForm = useForm<{
-    requestedBy: string;
-    status: string;
     items: Item[];
   }>({
     initialValues: {
-      requestedBy: '',
-      status: 'PENDING',
       items: [{ name: '', quantity: 1, description: '' }],
     },
     validate: (values) => {
@@ -113,13 +92,26 @@ const MaterialRequests = () => {
     },
   });
 
+  const approvalForm = useForm({
+    mode: 'uncontrolled',
+    initialValues: {
+      status: '',
+    },
+    validate: yupResolver(approvalMaterialSchema),
+  });
+
   // HANDLE SUBMIT
-  const handleAdd = async (values: { requestedBy: string; status: string; items: Item[] }) => {
-    console.log(values);
+  const handleAdd = async (values: { items: Item[] }) => {
+    if (!user) return;
     try {
-      await axiosInstance.post('/material-requests', values);
+      const data = {
+        requestedBy: user?.email,
+        status: 'PENDING',
+        items: values.items,
+      };
+      await axiosInstance.post('/material-requests', data);
       fetchData();
-      close();
+      closeAdd();
     } catch (err) {
       setError('Failed to add data.');
     }
@@ -127,7 +119,6 @@ const MaterialRequests = () => {
 
   const handleDeleteSubmit = async () => {
     if (!selectedMaterialRequest) return;
-
     try {
       await axiosInstance.delete(`/material-requests/${selectedMaterialRequest.id}`);
       setMaterialData((prevData) =>
@@ -139,23 +130,34 @@ const MaterialRequests = () => {
     }
   };
 
+  const handleApprovalSubmit = async (values: { status: string }) => {
+    if (!selectedMaterialRequest) return;
+    try {
+      const data = {
+        status: values.status,
+        approvalBy: user?.email,
+      };
+      await axiosInstance.put(`/material-requests/${selectedMaterialRequest.id}`, data);
+      fetchData();
+      closeApproval();
+    } catch (err) {
+      setError('Failed to update the material request.');
+    }
+  };
+
   // HANDLE OPEN
-  const handleOpenView = (id: number) => {
-    const request = materialData.find((item) => item.id === id);
-    setSelectedMaterialRequest(request || null);
-    console.log();
+  const handleOpenView = (data: MaterialRequest) => {
+    setSelectedMaterialRequest(data || null);
     openView();
   };
 
-  const handleOpenApproval = (id: number) => {
-    const request = materialData.find((item) => item.id === id);
-    setSelectedMaterialRequest(request || null);
+  const handleOpenApproval = (data: MaterialRequest) => {
+    setSelectedMaterialRequest(data || null);
     openApproval();
   };
 
-  const handleOpenDelete = (id: number) => {
-    const request = materialData.find((item) => item.id === id);
-    setSelectedMaterialRequest(request || null);
+  const handleOpenDelete = (data: MaterialRequest) => {
+    setSelectedMaterialRequest(data || null);
     openDelete();
   };
 
@@ -209,16 +211,16 @@ const MaterialRequests = () => {
         enableHiding: false,
         Cell: ({ row }) => (
           <Group>
-            <Button size="xs" color="green" onClick={() => handleOpenView(row.original.id)}>
+            <Button size="xs" color="green" onClick={() => handleOpenView(row.original)}>
               View
             </Button>
             {user?.department === 'Warehouse' && (
-              <Button size="xs" onClick={() => handleOpenApproval(row.original.id)}>
+              <Button size="xs" onClick={() => handleOpenApproval(row.original)}>
                 Approval
               </Button>
             )}
             {user?.department === 'Production' && (
-              <Button size="xs" color="red" onClick={() => handleOpenDelete(row.original.id)}>
+              <Button size="xs" color="red" onClick={() => handleOpenDelete(row.original)}>
                 Delete
               </Button>
             )}
@@ -251,19 +253,6 @@ const MaterialRequests = () => {
       <Modal opened={openedAddModal} onClose={closeAdd} title="Add Material Request">
         <form onSubmit={addMaterialForm.onSubmit(handleAdd)}>
           <Flex direction="column" gap="md">
-            <TextInput
-              label="Requested By"
-              placeholder="Requested By"
-              {...addMaterialForm.getInputProps('requestedBy')}
-              value={user?.email}
-              readOnly
-            />
-            <TextInput
-              label="Status"
-              placeholder="Status"
-              {...addMaterialForm.getInputProps('status')}
-              readOnly
-            />
             <Flex direction="column" gap="md">
               <Title order={5}>Items</Title>
               <Group>
@@ -348,21 +337,34 @@ const MaterialRequests = () => {
 
       {/* Modal Approval */}
       <Modal opened={openedApprovalModal} onClose={closeApproval} title="Approval Material Request">
-        {selectedMaterialRequest && (
-          <Flex direction="column" gap="md">
-            <Text>ID: {selectedMaterialRequest.id}</Text>
-            <Text>Requested By: {selectedMaterialRequest.requestedBy}</Text>
-            <Text>Status: {selectedMaterialRequest.status}</Text>
-          </Flex>
-        )}
-        <Group justify="flex-end" mt="lg">
-          <Button onClick={closeApproval} color="red">
-            Cancel
-          </Button>
-          <Button type="submit" color="green">
-            Submit
-          </Button>
-        </Group>
+        <form onSubmit={approvalForm.onSubmit(handleApprovalSubmit)}>
+          {selectedMaterialRequest && (
+            <>
+              <Flex direction="column" gap="md">
+                <Text>ID: {selectedMaterialRequest.id}</Text>
+                <Text>Requested By: {selectedMaterialRequest.requestedBy}</Text>
+                <Text>Status: {selectedMaterialRequest.status}</Text>
+              </Flex>
+              <Flex direction="column" gap="md" my="md">
+                <Select
+                  label="Material Request Status"
+                  placeholder="Select Status"
+                  data={['PENDING', 'APPROVED', 'REJECTED']}
+                  {...approvalForm.getInputProps('status')}
+                  defaultValue={selectedMaterialRequest.status}
+                />
+              </Flex>
+            </>
+          )}
+          <Group justify="flex-end" mt="lg">
+            <Button onClick={closeApproval} color="red">
+              Cancel
+            </Button>
+            <Button type="submit" color="green">
+              Submit
+            </Button>
+          </Group>
+        </form>
       </Modal>
 
       {/* Modal Delete */}
